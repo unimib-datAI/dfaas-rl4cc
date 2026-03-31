@@ -6,9 +6,9 @@ FROM python:3.12.3-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 # -- RL4CC installation
-ENV RL4CC_URL=https://github.com/FFede0/RL4CC.git
-ENV RL4CC_RAW_URL=https://raw.githubusercontent.com/FFede0/RL4CC
-ENV RL4CC_TAG=test_ray2.40.0
+ENV RL4CC_URL=https://github.com/unimib-datAI/dfaas-rl4cc.git
+ENV RL4CC_RAW_URL=https://raw.githubusercontent.com/unimib-datAI/dfaas-rl4cc
+ENV RL4CC_TAG=dfaas
 # -- runtime configuration
 ENV CHECKPOINT_DIR=/app/checkpoints
 ENV CONFIGURATION_FILE=/app/config/config.json
@@ -33,11 +33,6 @@ RUN apt-get update && apt-get install -y \
 RUN useradd -m appuser
 
 # ------------------------------------------------------------------
-# Working directory
-# ------------------------------------------------------------------
-WORKDIR /app
-
-# ------------------------------------------------------------------
 # Install dependencies
 # ------------------------------------------------------------------
 RUN pip install --upgrade pip
@@ -49,15 +44,24 @@ RUN pip install --no-cache-dir \
     uvicorn \
     pydantic \
     gymnasium \
-    cloudpickle
+    cloudpickle \
+    matplotlib
+
+# Required by DFaaS-specific code. We do not use a GPU for inference.
+RUN pip install --no-cache-dir torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
 
 # ------------------------------------------------------------------
 # Install RL4CC from Git
 # ------------------------------------------------------------------
 RUN pip install git+${RL4CC_URL}@${RL4CC_TAG}
+RUN mkdir /app && curl -L ${RL4CC_RAW_URL}/${RL4CC_TAG}/deployment/rl4cc-serve.sh -o /app/rl4cc-serve.sh
+
+# Patch Ray with patches in RL4CC
 RUN curl -L \
-    ${RL4CC_RAW_URL}/${RL4CC_TAG}/deployment/rl4cc-serve.sh \
-    -o /app/rl4cc-serve.sh
+    ${RL4CC_RAW_URL}/${RL4CC_TAG}/deployment/patches/ray_debug.patch -o /tmp/ray_debug.patch \
+    ${RL4CC_RAW_URL}/${RL4CC_TAG}/deployment/patches/ray_fcnet.patch -o /tmp/ray_fcnet.patch \
+    ${RL4CC_RAW_URL}/${RL4CC_TAG}/deployment/patches/torch_action_dist.patch -o /tmp/torch_action_dist.patch
+RUN set -e; for patchfile in /tmp/*.patch; do patch --batch -p0 < "$patchfile"; done
 
 # ------------------------------------------------------------------
 # Create directories expected by env variables
@@ -65,15 +69,9 @@ RUN curl -L \
 RUN mkdir -p /app/checkpoints /app/config /app/logs
 
 # ------------------------------------------------------------------
-# Copy additional files from context (and install modules if required)
+# Copy additional files from context
 # ------------------------------------------------------------------
 COPY . /app
-RUN if [ -f /app/requirements.txt ]; then \
-    echo "Installing additional Python dependencies from requirements.txt"; \
-    pip install -r /app/requirements.txt; \
-else \
-    echo "No additional requirements.txt found"; \
-fi
 
 # ------------------------------------------------------------------
 # Set ownership and change user
@@ -90,5 +88,6 @@ EXPOSE 8000
 # ------------------------------------------------------------------
 # Run FastAPI app
 # ------------------------------------------------------------------
+WORKDIR /app
 RUN chmod +x rl4cc-serve.sh
 ENTRYPOINT ["./rl4cc-serve.sh"]
